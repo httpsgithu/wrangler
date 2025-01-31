@@ -7,7 +7,9 @@ pub use manifest::AssetManifest;
 pub use sync::sync;
 
 use std::collections::HashSet;
+use std::error::Error;
 use std::ffi::OsString;
+use std::fmt;
 use std::fs;
 use std::hash::Hasher;
 use std::path::Path;
@@ -60,6 +62,17 @@ pub fn add_namespace(user: &GlobalUser, target: &mut Target, preview: bool) -> R
 
     Ok(site_namespace)
 }
+
+#[derive(Debug, Clone)]
+pub struct NotADirectoryError;
+
+impl fmt::Display for NotADirectoryError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Not a directory. Check your configuration file; the `bucket` attribute for [site] should point to a directory.")
+    }
+}
+
+impl Error for NotADirectoryError {}
 
 // Returns the hashed key and value pair for all files in a directory.
 pub fn directory_keys_values(
@@ -120,8 +133,7 @@ pub fn directory_keys_values(
         }
         Ok(_file_type) => {
             // any other file types (files, symlinks)
-            // TODO: return an error type here, like NotADirectoryError
-            Err(anyhow!("Check your configuration file; the `bucket` attribute for [site] should point to a directory."))
+            Err(anyhow::Error::new(NotADirectoryError))
         }
         Err(e) => Err(anyhow!(e)),
     }
@@ -245,10 +257,10 @@ fn generate_url_safe_path(path: &Path) -> Result<String> {
     Ok(path.to_string())
 }
 
-// Adds the SHA-256 hash of the path's file contents to the url-safe path of a file to
+// Adds the XXhash hash of the path's file contents to the url-safe path of a file to
 // generate a versioned key for the file and its contents. Returns the url-safe path prefix
 // for the key, as well as the key with hash appended.
-// e.g (sitemap.xml, sitemap.ec717eb2131fdd4fff803b851d2aa5b1dc3e0af36bc3c8c40f2095c747e80d1e.xml)
+// e.g (sitemap.xml, sitemap.ec717eb213.xml)
 pub fn generate_path_and_key(
     path: &Path,
     directory: &Path,
@@ -321,6 +333,7 @@ mod tests {
         Target {
             account_id: None.into(),
             kv_namespaces: Vec::new(),
+            r2_buckets: Vec::new(),
             durable_objects: None,
             migrations: None,
             name: "".to_string(),

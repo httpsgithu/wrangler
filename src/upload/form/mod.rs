@@ -22,7 +22,7 @@ use project_assets::{ModulesAssets, ServiceWorkerAssets};
 use text_blob::TextBlob;
 use wasm_module::WasmModule;
 
-// TODO: https://github.com/cloudflare/wrangler/issues/1083
+// TODO: https://github.com/cloudflare/wrangler-legacy/issues/1083
 use super::{krate, Package};
 
 pub fn build(
@@ -34,6 +34,7 @@ pub fn build(
     let compatibility_date = target.compatibility_date.clone();
     let compatibility_flags = target.compatibility_flags.clone();
     let kv_namespaces = &target.kv_namespaces;
+    let r2_buckets = &target.r2_buckets;
     let durable_object_classes = target
         .durable_objects
         .as_ref()
@@ -91,6 +92,7 @@ pub fn build(
                 compatibility_flags,
                 wasm_modules,
                 kv_namespaces: kv_namespaces.to_vec(),
+                r2_buckets: r2_buckets.to_vec(),
                 durable_object_classes,
                 text_blobs,
                 plain_texts,
@@ -113,6 +115,7 @@ pub fn build(
                         compatibility_flags,
                         wasm_modules,
                         kv_namespaces: kv_namespaces.to_vec(),
+                        r2_buckets: r2_buckets.to_vec(),
                         durable_object_classes,
                         text_blobs,
                         plain_texts,
@@ -123,7 +126,7 @@ pub fn build(
                 }
                 UploadFormat::Modules { main, dir, rules } => {
                     let migration = match &target.migrations {
-                        Some(migrations) => Some(migrations.api_migration()?),
+                        Some(migrations) => migrations.api_migration()?,
                         None => None,
                     };
 
@@ -133,8 +136,10 @@ pub fn build(
                         compatibility_flags,
                         module_config.get_modules()?,
                         kv_namespaces.to_vec(),
+                        r2_buckets.to_vec(),
                         durable_object_classes,
                         migration,
+                        text_blobs,
                         plain_texts,
                         usage_model,
                     )?;
@@ -154,6 +159,7 @@ pub fn build(
                     compatibility_flags,
                     wasm_modules,
                     kv_namespaces: kv_namespaces.to_vec(),
+                    r2_buckets: r2_buckets.to_vec(),
                     durable_object_classes,
                     text_blobs,
                     plain_texts,
@@ -165,7 +171,7 @@ pub fn build(
         },
         TargetType::Webpack => {
             log::info!("webpack project detected. Publishing...");
-            // TODO: https://github.com/cloudflare/wrangler/issues/850
+            // TODO: https://github.com/cloudflare/wrangler-legacy/issues/850
             let package_dir = target.package_dir()?;
             let bundle = wranglerjs::Bundle::new(&package_dir);
 
@@ -184,6 +190,7 @@ pub fn build(
                 compatibility_flags,
                 wasm_modules,
                 kv_namespaces: kv_namespaces.to_vec(),
+                r2_buckets: r2_buckets.to_vec(),
                 durable_object_classes,
                 text_blobs,
                 plain_texts,

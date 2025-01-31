@@ -77,6 +77,7 @@ pub(super) fn upload(
 pub struct Session {
     pub host: String,
     pub websocket_url: Url,
+    pub prewarm_url: Url,
     pub preview_token: String,
 }
 
@@ -106,16 +107,17 @@ impl Session {
         let response = client.get(exchange_url).send()?.error_for_status()?;
         let text = &response.text()?;
         let response: InspectorV4ApiResponse = serde_json::from_str(text)?;
-        let full_url = format!(
+        let websocket_url = format!(
             "{}?{}={}",
             &response.inspector_websocket, "cf_workers_preview_token", &response.token
-        );
-        let websocket_url = Url::parse(&full_url)?;
+        )
+        .parse()?;
         let preview_token = response.token;
 
         Ok(Session {
             host,
             websocket_url,
+            prewarm_url: response.prewarm.parse()?,
             preview_token,
         })
     }
@@ -135,8 +137,8 @@ fn get_session_config(target: &DeployTarget) -> serde_json::Value {
     }
 }
 
-fn get_session_address(target: &DeployTarget) -> String {
-    match target {
+fn get_session_address(target: &DeployTarget) -> Result<String> {
+    let addr = match target {
         DeployTarget::Zoned(config) => format!(
             "https://api.cloudflare.com/client/v4/zones/{}/workers/edge-preview",
             config.zone_id
@@ -144,10 +146,11 @@ fn get_session_address(target: &DeployTarget) -> String {
         // TODO: zoneless is probably wrong
         DeployTarget::Zoneless(config) => format!(
             "https://api.cloudflare.com/client/v4/accounts/{}/workers/subdomain/edge-preview",
-            config.account_id
+            config.account_id.load()?,
         ),
         _ => unreachable!(),
-    }
+    };
+    Ok(addr)
 }
 
 fn get_upload_address(target: &mut Target) -> Result<String> {
@@ -160,7 +163,7 @@ fn get_upload_address(target: &mut Target) -> Result<String> {
 
 fn get_exchange_url(deploy_target: &DeployTarget, user: &GlobalUser) -> Result<Url> {
     let client = crate::http::legacy_auth_client(user);
-    let address = get_session_address(deploy_target);
+    let address = get_session_address(deploy_target)?;
     let url = Url::parse(&address)?;
     let response = client.get(url).send()?.error_for_status()?;
     let text = &response.text()?;
@@ -183,6 +186,7 @@ struct SessionV4ApiResponse {
 #[derive(Debug, Serialize, Deserialize)]
 struct InspectorV4ApiResponse {
     pub inspector_websocket: String,
+    pub prewarm: String,
     pub token: String,
 }
 

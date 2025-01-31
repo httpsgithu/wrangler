@@ -109,7 +109,9 @@ pub fn run_build_and_watch(target: &Target, tx: Option<Sender<()>>) -> Result<()
                     if write_wranglerjs_output(&bundle, &wranglerjs_output, custom_webpack).is_ok()
                     {
                         if let Some(tx) = tx.clone() {
-                            tx.send(()).expect("--watch change message failed to send");
+                            if let Err(e) = tx.send(()) {
+                                log::error!("wranglerjs watch operation failed to notify: {}", e);
+                            }
                         }
                     }
                 }
@@ -163,7 +165,11 @@ fn setup_build(target: &Target) -> Result<(Command, PathBuf, Bundle)> {
     run_npm_install(&package_dir).expect("could not run `npm install`");
 
     let node = which::which("node").unwrap();
+
     let mut command = Command::new(node);
+
+    use_legacy_openssl_if_necessary(&mut command)?;
+
     let wranglerjs_path = install().expect("could not install wranglerjs");
     command.arg(wranglerjs_path);
 
@@ -307,4 +313,34 @@ fn random_chars(n: usize) -> String {
         .map(char::from)
         .take(n)
         .collect()
+}
+
+// If user is on Node 17+, we may need legacy OpenSSL because Webpack 4 relies on
+// calls that were removed in OpenSSL 3. See:
+// https://github.com/cloudflare/wrangler-legacy/issues/2108
+// https://github.com/nodejs/node/blob/master/doc/changelogs/CHANGELOG_V17.md#openssl-30
+// Node 17+ can still be built against OpenSSL 1, in which case the option
+// doesn't exist. We need to check for that as well. See:
+// https://github.com/cloudflare/wrangler-legacy/issues/2155
+fn use_legacy_openssl_if_necessary(command: &mut Command) -> Result<()> {
+    let node = which::which("node").unwrap();
+
+    let mut version_check_command = Command::new(&node);
+    version_check_command.arg("--version");
+    let result = version_check_command.output()?.stdout;
+    let need_legacy_openssl = String::from_utf8_lossy(&result)[1..3]
+        .parse::<i32>()
+        .unwrap()
+        >= 17;
+
+    let mut option_exists_command = Command::new(&node);
+    option_exists_command.arg("--help");
+    let result = option_exists_command.output()?.stdout;
+    let option_exists = String::from_utf8_lossy(&result).contains("--openssl-legacy-provider");
+
+    if need_legacy_openssl && option_exists {
+        command.arg("--openssl-legacy-provider");
+    }
+
+    Ok(())
 }

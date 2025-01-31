@@ -1,4 +1,5 @@
 use super::preview_request;
+use crate::commands::dev;
 use crate::commands::dev::gcs::headers::destructure_response;
 use crate::commands::dev::server_config::ServerConfig;
 use crate::commands::dev::utils::{get_path_as_str, rewrite_redirect};
@@ -9,15 +10,13 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use chrono::prelude::*;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Client as HyperClient, Request, Response, Server};
-use hyper_rustls::HttpsConnector;
+use hyper::{Response, Server};
 
 /// performs all logic that takes an incoming request
 /// and routes it to the Workers runtime preview service
 pub async fn http(server_config: ServerConfig, preview_id: Arc<Mutex<String>>) -> Result<()> {
     // set up https client to connect to the preview service
-    let https = HttpsConnector::with_native_roots();
-    let client = HyperClient::builder().build::<_, Body>(https);
+    let client = dev::client();
 
     let listening_address = server_config.listening_address;
 
@@ -55,12 +54,9 @@ pub async fn http(server_config: ServerConfig, preview_id: Arc<Mutex<String>>) -
 
                 async move {
                     // send the request to the preview service
-                    let resp = preview_request(
-                        Request::from_parts(parts, body),
-                        client,
-                        preview_id.to_owned(),
-                    )
-                    .await?;
+                    let resp = client
+                        .request(preview_request(parts, body, preview_id.to_owned()))
+                        .await?;
                     let (mut parts, body) = resp.into_parts();
 
                     // format the response for the user
@@ -72,6 +68,8 @@ pub async fn http(server_config: ServerConfig, preview_id: Arc<Mutex<String>>) -
                         &local_host,
                         false,
                     );
+
+                    // TODO: proxy websocket
 
                     // print information about the response
                     // [2020-04-20 15:25:54] GET example.com/ HTTP/1.1 200 OK
