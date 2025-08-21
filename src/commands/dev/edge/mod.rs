@@ -9,6 +9,7 @@ use watch::watch_for_changes;
 
 use crate::commands::dev::{socket, Protocol, ServerConfig};
 use crate::deploy::DeployTarget;
+use crate::login::check_update_oauth_token;
 use crate::settings::global_user::GlobalUser;
 use crate::settings::toml::Target;
 use crate::terminal::message::{Message, StdOut};
@@ -22,6 +23,7 @@ use std::sync::{
 };
 use std::thread;
 
+#[allow(clippy::too_many_arguments)]
 pub fn dev(
     target: Target,
     user: GlobalUser,
@@ -30,11 +32,16 @@ pub fn dev(
     local_protocol: Protocol,
     upstream_protocol: Protocol,
     verbose: bool,
+    inspect: bool,
 ) -> Result<()> {
     let runtime = TokioRuntime::new()?;
     loop {
         let target = target.clone();
-        let user = user.clone();
+        let mut user = user.clone();
+
+        // Check if oauth token is expired
+        check_update_oauth_token(&mut user)?;
+
         let server_config = server_config.clone();
         let deploy_target = deploy_target.clone();
         let (sender, receiver) = mpsc::channel();
@@ -49,6 +56,7 @@ pub fn dev(
             local_protocol,
             upstream_protocol,
             verbose,
+            inspect,
             &runtime,
             sender,
             (rx_init_shutdown, tx_ack_shutdown),
@@ -79,6 +87,7 @@ fn dev_once(
     local_protocol: Protocol,
     upstream_protocol: Protocol,
     verbose: bool,
+    inspect: bool,
     runtime: &TokioRuntime,
     refresh_session_sender: Sender<Option<()>>,
     shutdown_channel: (oneshot::Receiver<()>, oneshot::Sender<()>),
@@ -93,8 +102,20 @@ fn dev_once(
         verbose,
     )?;
 
-    let preview_token = Arc::new(Mutex::new(preview_token));
+    let inspect = if inspect {
+        // prewarm the isolate
+        let client = crate::http::client();
+        client
+            .post(session.prewarm_url)
+            .header("cf-workers-preview-token", &preview_token)
+            .send()?
+            .error_for_status()?;
+        Some(target.name.clone())
+    } else {
+        None
+    };
 
+    let preview_token = Arc::new(Mutex::new(preview_token));
     {
         let preview_token = preview_token.clone();
         let session_token = session.preview_token.clone();
@@ -115,19 +136,31 @@ fn dev_once(
 
     let devtools_listener = runtime.spawn(socket::listen(
         session.websocket_url,
+        server_config.clone(),
+        inspect,
         Some(refresh_session_sender),
     ));
+
+    let host = if server_config.host.is_default() {
+        session.host
+    } else {
+        if !server_config.host.to_string().contains(&session.host) {
+            StdOut::warn("The provided host appears to not be a domain or subdomain of the zone specified in your wrangler.toml. This may cause `wrangler dev` to not work properly. To use a host outside of your zone you can run `wrangler dev --unauthenticated`");
+        }
+        server_config.host.to_string()
+    };
+
     let server = match local_protocol {
         Protocol::Https => runtime.spawn(server::https(
             server_config,
             Arc::clone(&preview_token),
-            session.host,
+            host,
             shutdown_channel,
         )),
         Protocol::Http => runtime.spawn(server::http(
             server_config,
             Arc::clone(&preview_token),
-            session.host,
+            host,
             upstream_protocol,
             shutdown_channel,
         )),

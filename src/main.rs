@@ -6,23 +6,30 @@ extern crate tokio;
 use std::env;
 
 use wrangler::cli::{exec, Cli, Command};
-use wrangler::commands;
 use wrangler::installer;
-use wrangler::reporter;
-use wrangler::terminal::message::{Message, StdOut};
-use wrangler::terminal::styles;
-use wrangler::version::background_check_for_updates;
+use wrangler::terminal::message::{Message, StdErr};
+use wrangler::terminal::{emoji, styles};
+use wrangler::version::check_for_updates;
 
 use anyhow::Result;
 use structopt::StructOpt;
 
 fn main() -> Result<()> {
-    if !cfg!(debug_assertions) {
-        reporter::init();
-    }
     env_logger::init();
 
-    let latest_version_receiver = background_check_for_updates();
+    StdErr::deprecation_warning(&format!(
+        r#"{} {} {}
+The version of Wrangler you are using is now deprecated.
+Please update to the latest version of wrangler to prevent critical errors.
+If originally installed via npm, run `npm uninstall -g @cloudflare/wrangler && npm install -g wrangler` to update to the latest version.
+If originally installed via cargo, run `cargo uninstall wrangler && npm install -g wrangler`
+Docs migration guide: https://developers.cloudflare.com/workers/wrangler/migration/migrating-from-wrangler-1/#update-wrangler-version
+"#,
+        emoji::NO_ENTRY,
+        styles::warning("DEPRECATED"),
+        emoji::NO_ENTRY,
+    ));
+
     if let Ok(me) = env::current_exe() {
         // If we're actually running as the installer then execute our
         // self-installation, otherwise just continue as usual.
@@ -36,22 +43,7 @@ fn main() -> Result<()> {
         }
     }
     run()?;
-    if let Ok(latest_version) = latest_version_receiver.try_recv() {
-        let latest_version = styles::highlight(latest_version.to_string());
-        let new_version_available = format!(
-            "A new version of Wrangler ({}) is available!",
-            latest_version
-        );
-        let update_message = "You can learn more about updating here:".to_string();
-        let update_docs_url = styles::url(
-            "https://developers.cloudflare.com/workers/cli-wrangler/install-update#update",
-        );
-
-        StdOut::billboard(&format!(
-            "{}\n{}\n{}",
-            new_version_available, update_message, update_docs_url
-        ));
-    }
+    check_for_updates();
     Ok(())
 }
 
@@ -86,6 +78,8 @@ fn run() -> Result<()> {
             port,
             local_protocol,
             upstream_protocol,
+            inspect,
+            unauthenticated,
         } => exec::dev(
             host,
             ip,
@@ -93,6 +87,8 @@ fn run() -> Result<()> {
             local_protocol,
             upstream_protocol,
             &cli_params,
+            inspect,
+            unauthenticated,
         ),
         Command::Whoami => exec::whoami(),
         Command::Publish {
@@ -103,6 +99,7 @@ fn run() -> Result<()> {
         Command::Subdomain { name } => exec::subdomain(name, &cli_params),
         Command::Route(route) => exec::route(route, &cli_params),
         Command::Secret(secret) => exec::secret(secret, &cli_params),
+        Command::R2(r2) => exec::r2_bucket(r2, &cli_params),
         Command::KvNamespace(namespace) => exec::kv_namespace(namespace, &cli_params),
         Command::KvKey(key) => exec::kv_key(key, &cli_params),
         Command::KvBulk(bulk) => exec::kv_bulk(bulk, &cli_params),
@@ -131,9 +128,10 @@ fn run() -> Result<()> {
             search,
             &cli_params,
         ),
-        Command::Login => commands::login::run(),
-        Command::Report { log } => commands::report::run(log.as_deref()).map(|_| {
-            eprintln!("Report submission sucessful. Thank you!");
-        }),
+        Command::Login {
+            scopes,
+            scopes_list,
+        } => exec::login(&scopes, scopes_list),
+        Command::Logout => exec::logout(),
     }
 }

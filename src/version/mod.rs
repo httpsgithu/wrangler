@@ -1,11 +1,11 @@
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::mpsc;
-use std::thread;
 use std::time::SystemTime;
 
 use crate::settings::get_wrangler_home_dir;
+use crate::terminal::message::{Message, StdOut};
+use crate::terminal::styles;
 
 use anyhow::Result;
 use reqwest::header::USER_AGENT;
@@ -14,21 +14,37 @@ use serde::{Deserialize, Serialize};
 
 const ONE_DAY: u64 = 60 * 60 * 24;
 
-pub fn background_check_for_updates() -> mpsc::Receiver<Version> {
-    let (sender, receiver) = mpsc::channel();
-
-    let _detached_thread = thread::spawn(move || match check_wrangler_versions() {
-        Ok(wrangler_versions) => {
-            // If the wrangler version has not been checked within the last day and the versions
-            // are different, print out an update message
-            if wrangler_versions.is_outdated() {
-                let _ = sender.send(wrangler_versions.latest);
+pub fn check_for_updates() {
+    let major_version_message = String::from("A new major version of wrangler is available!\n");
+    let minor_version_message = match check_wrangler_versions() {
+        Err(e) => {
+            log::debug!("could not determine if update is needed:\n{}", e);
+            None
+        }
+        Ok(versions) => {
+            if let Some(diff) = versions.is_outdated() {
+                Some(format!(
+                    "Additionally, a new {} version is available ({})\n",
+                    diff, versions.current
+                ))
+            } else {
+                None
             }
         }
-        Err(e) => log::debug!("could not determine if update is needed:\n{}", e),
-    });
+    }
+    .unwrap_or_else(|| "".to_string());
 
-    receiver
+    let update_message = format!(
+        "You can learn more about updating here:\n{}",
+        styles::url("https://developers.cloudflare.com/workers/cli-wrangler/install-update#update",)
+    );
+
+    let message = format!(
+        "{}{}{}",
+        major_version_message, minor_version_message, update_message
+    );
+
+    StdOut::billboard(&message);
 }
 
 #[derive(Debug, Clone)]
@@ -43,9 +59,38 @@ struct WranglerVersion {
     pub checked: bool,
 }
 
+/// _how_ outdated is the currently installed version of wrangler.
+/// Major is omitted because there will always be a new major
+/// version of wrangler
+enum VersionDiff {
+    Minor,
+    Patch,
+}
+
+impl std::fmt::Display for VersionDiff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                VersionDiff::Minor => "minor",
+                VersionDiff::Patch => "patch",
+            }
+        )
+    }
+}
+
 impl WranglerVersion {
-    pub fn is_outdated(&self) -> bool {
-        !self.checked && (self.current != self.latest)
+    pub fn is_outdated(&self) -> Option<VersionDiff> {
+        if self.checked {
+            None
+        } else if self.current.minor < self.latest.minor {
+            Some(VersionDiff::Minor)
+        } else if self.current.patch < self.latest.patch {
+            Some(VersionDiff::Patch)
+        } else {
+            None
+        }
     }
 }
 

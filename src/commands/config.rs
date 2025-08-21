@@ -9,6 +9,7 @@ use anyhow::Result;
 use cloudflare::endpoints::user::{GetUserDetails, GetUserTokenStatus};
 use cloudflare::framework::apiclient::ApiClient;
 
+use crate::commands::logout::invalidate_oauth_token;
 use crate::http;
 use crate::settings::{get_global_config_path, global_user::GlobalUser};
 use crate::terminal::message::{Message, StdOut};
@@ -28,6 +29,9 @@ pub fn global_config(user: &GlobalUser, verify: bool) -> Result<()> {
         StdOut::info("Validating credentials...");
         validate_credentials(user)?;
     }
+
+    // Invalidate previous oauth token if present
+    invalidate_oauth_token("`wrangler config`".to_string());
 
     let config_file = get_global_config_path();
     user.to_file(&config_file)?;
@@ -50,12 +54,12 @@ pub fn validate_credentials(user: &GlobalUser) -> Result<()> {
     let client = http::cf_v4_client(user)?;
 
     match user {
-        GlobalUser::TokenAuth { .. } => match client.request(&GetUserTokenStatus {}) {
+        GlobalUser::ApiTokenAuth { .. } => match client.request(&GetUserTokenStatus {}) {
             Ok(success) => {
                 if success.result.status == "active" {
                     Ok(())
                 } else {
-                    anyhow::bail!("Authentication check failed. Your token has status \"{}\", not \"active\".\nTry rolling your token on the Cloudflare dashboard.")
+                    anyhow::bail!("Authentication check failed. Your token has status \"{}\", not \"active\".\nTry rolling your token on the Cloudflare dashboard.", success.result.status)
                 }
             }
             Err(e) => anyhow::bail!(
@@ -72,5 +76,6 @@ pub fn validate_credentials(user: &GlobalUser) -> Result<()> {
                 anyhow::bail!("Authentication check failed. Please make sure your email and global API key pair are correct.\nSee {}", api_docs_url)
             }
         },
+        GlobalUser::OAuthTokenAuth { .. } => anyhow::bail!("OAuth token cannot be verified."),
     }
 }

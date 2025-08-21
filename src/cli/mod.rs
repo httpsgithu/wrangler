@@ -4,8 +4,11 @@ pub mod dev;
 pub mod generate;
 pub mod init;
 pub mod kv;
+pub mod login;
+pub mod logout;
 pub mod preview;
 pub mod publish;
+pub mod r2;
 pub mod route;
 pub mod secret;
 pub mod subdomain;
@@ -21,8 +24,11 @@ pub mod exec {
     pub use super::kv::kv_bulk;
     pub use super::kv::kv_key;
     pub use super::kv::kv_namespace;
+    pub use super::login::login;
+    pub use super::logout::logout;
     pub use super::preview::preview;
     pub use super::publish::publish;
+    pub use super::r2::r2_bucket;
     pub use super::route::route;
     pub use super::secret::secret;
     pub use super::subdomain::subdomain;
@@ -38,7 +44,7 @@ use crate::commands::dev::Protocol;
 use crate::commands::tail::websocket::TailFormat;
 use crate::preview::HttpMethod;
 use crate::settings::toml::migrations::{
-    DurableObjectsMigration, Migration, MigrationConfig, Migrations, RenameClass, TransferClass,
+    DurableObjectsMigration, Migration, MigrationTag, Migrations, RenameClass, TransferClass,
 };
 use crate::settings::toml::TargetType;
 
@@ -84,6 +90,10 @@ pub enum Command {
     /// Interact with multiple Workers KV key-value pairs at once
     #[structopt(name = "kv:bulk", setting = AppSettings::SubcommandRequiredElseHelp)]
     KvBulk(kv::KvBulk),
+
+    /// Interact with your Workers R2 Buckets
+    #[structopt(setting = AppSettings::SubcommandRequiredElseHelp)]
+    R2(r2::R2),
 
     /// List or delete worker routes.
     #[structopt(name = "route", setting = AppSettings::SubcommandRequiredElseHelp)]
@@ -177,6 +187,14 @@ pub enum Command {
         /// but can be set to http
         #[structopt(name = "upstream-protocol")]
         upstream_protocol: Option<Protocol>,
+
+        /// Inspect the worker using Chrome DevTools
+        #[structopt(long)]
+        inspect: bool,
+
+        /// Run wrangler dev unauthenticated
+        #[structopt(long)]
+        unauthenticated: bool,
     },
 
     /// Publish your worker to the orange cloud
@@ -271,15 +289,20 @@ pub enum Command {
 
     /// Authenticate wrangler with your Cloudflare username and password
     #[structopt(name = "login")]
-    Login,
+    Login {
+        /// Allows to choose set of scopes
+        #[structopt(name = "scopes", long, possible_values = login::SCOPES_LIST.as_ref())]
+        scopes: Vec<String>,
 
-    /// Report an error caught by wrangler to Cloudflare
-    #[structopt(name = "report")]
-    Report {
-        /// Specifies a log to report (e.g. --log=1619728882567.log)
-        #[structopt(name = "log", long)]
-        log: Option<PathBuf>,
+        /// List all scopes
+        #[structopt(name = "scopes-list", long)]
+        scopes_list: bool,
     },
+
+    /// Logout from your current authentication method and remove any configuration files.
+    /// It does not logout if you have authenticated wrangler through environment variables.
+    #[structopt(name = "logout")]
+    Logout,
 }
 
 #[derive(Debug, Clone, StructOpt)]
@@ -293,17 +316,25 @@ pub struct AdhocMigration {
     delete_class: Vec<String>,
 
     /// Rename a durable object class
-    #[structopt(name = "rename-class", long, number_of_values = 2)]
+    #[structopt(name = "rename-class", long, number_of_values = 2, value_names(&["from class", "to class"]))]
     rename_class: Vec<String>,
 
     /// Transfer all durable objects associated with a class in another script to a class in
     /// this script
-    #[structopt(name = "transfer-class", long, number_of_values = 3)]
+    #[structopt(name = "transfer-class", long, number_of_values = 3, value_names(&["from script", "from class", "to class"]))]
     transfer_class: Vec<String>,
+
+    /// Specify the existing migration tag for the script.
+    #[structopt(name = "old-tag", long)]
+    old_tag: Option<String>,
+
+    /// Specify the new migration tag for the script
+    #[structopt(name = "new-tag", long)]
+    new_tag: Option<String>,
 }
 
 impl AdhocMigration {
-    pub fn into_migration_config(self) -> Option<MigrationConfig> {
+    pub fn into_migrations(self) -> Option<Migrations> {
         let migration = DurableObjectsMigration {
             new_classes: self.new_class,
             deleted_classes: self.delete_class,
@@ -343,12 +374,20 @@ impl AdhocMigration {
             && migration.renamed_classes.is_empty()
             && migration.transferred_classes.is_empty();
 
-        if !is_migration_empty {
-            Some(MigrationConfig {
-                tag: None,
-                migration: Migration {
+        if !is_migration_empty || self.old_tag.is_some() || self.new_tag.is_some() {
+            let migration = if !is_migration_empty {
+                Some(Migration {
                     durable_objects: migration,
-                },
+                })
+            } else {
+                None
+            };
+
+            Some(Migrations::Adhoc {
+                script_tag: MigrationTag::Unknown,
+                provided_old_tag: self.old_tag,
+                new_tag: self.new_tag,
+                migration,
             })
         } else {
             None
@@ -390,6 +429,10 @@ mod tests {
         let command = Cli::from_iter(&[
             "wrangler",
             "publish",
+            "--old-tag",
+            "oldTag",
+            "--new-tag",
+            "newTag",
             "--new-class",
             "newA",
             "--new-class",
@@ -417,17 +460,19 @@ mod tests {
 
         if let Command::Publish { migration, .. } = command {
             assert_eq!(
-                migration.into_migration_config(),
-                Some(MigrationConfig {
-                    tag: None,
-                    migration: Migration {
+                migration.into_migrations(),
+                Some(Migrations::Adhoc {
+                    script_tag: MigrationTag::Unknown,
+                    provided_old_tag: Some(String::from("oldTag")),
+                    new_tag: Some(String::from("newTag")),
+                    migration: Some(Migration {
                         durable_objects: DurableObjectsMigration {
                             new_classes: vec![String::from("newA"), String::from("newB")],
                             deleted_classes: vec![String::from("deleteA"), String::from("deleteB")],
                             renamed_classes: vec![rename_class("A"), rename_class("B")],
                             transferred_classes: vec![transfer_class("A"), transfer_class("B")],
                         }
-                    }
+                    })
                 })
             );
         } else {
